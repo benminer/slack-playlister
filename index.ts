@@ -9,6 +9,12 @@ const spotifyCreds = {
   clientSecret: params.SPOTIFY_SECRET,
 };
 
+const spotify = new SpotifyWebApi({
+  clientId: params.SPOTIFY_CLIENT_ID,
+  clientSecret: params.SPOTIFY_SECRET,
+  redirectUri: params.CLOUD_URL + "/redirect",
+});
+
 const postToResponseURL = async (
   url: string,
   channelName: string,
@@ -77,14 +83,18 @@ api.post("/slack", async (req, res) => {
   const channels = teamSubscribedChannels.items.map((i) => i.value.channelId);
   if (channelId && channels.includes(channelId) && req.body.event.text) {
     const msg = req.body.event.text;
-    if (msg.includes("open.spotify.com/track")) {
-      let trackId = msg.split("/")[4];
-      if (trackId.includes("?")) {
-        trackId = trackId.split("?")[0];
-      }
-      const spotifyTrackId = `spotify:track:${trackId}`;
-      try {
-        await data.set(
+    const msgParts = msg.split("\n");
+    const spotifyLinks = msgParts.filter((p) =>
+      p.includes("open.spotify.com/track")
+    );
+    await Promise.all(
+      spotifyLinks.map((link) => {
+        let trackId = link.split("/")[4];
+        if (trackId.includes("?")) {
+          trackId = trackId.split("?")[0];
+        }
+        const spotifyTrackId = `spotify:track:${trackId}`;
+        return data.set(
           `track:${trackId}`,
           {
             spotifyTrackId,
@@ -93,19 +103,13 @@ api.post("/slack", async (req, res) => {
             overwrite: true,
           }
         );
-      } catch (e) {
-        console.log(e, "error adding track to playlist");
-      }
-    }
+      })
+    );
   }
   return res.sendStatus(200);
 });
 
 api.get("/redirect", async (req, res) => {
-  const spotify = new SpotifyWebApi({
-    ...spotifyCreds,
-    redirectUri: params.CLOUD_URL + "/redirect",
-  });
   if (req.query.code) {
     console.log(`code: ${req.query.code}`);
     const authData = await spotify.authorizationCodeGrant(req.query.code);
@@ -122,12 +126,6 @@ api.get("/redirect", async (req, res) => {
 });
 
 api.get("/spotify", (req, res) => {
-  const redirectUri = params.CLOUD_URL + "/redirect";
-  const spotify = new SpotifyWebApi({
-    ...spotifyCreds,
-    redirectUri,
-  });
-
   const scopes = [
     "playlist-modify-private",
     "playlist-modify-public",
@@ -137,11 +135,8 @@ api.get("/spotify", (req, res) => {
   return res.redirect(authUrl);
 });
 
-data.on(["created"], async (event) => {
-  const spotify = new SpotifyWebApi({
-    ...spotifyCreds,
-    redirectUri: params.CLOUD_URL + "/redirect",
-  });
+data.on(["created:track"], async (event) => {
+  const { item } = event;
   const authData = await data.get<any>("spotify:auth");
   if (!authData) {
     console.log("No Spotify Auth Saved");
@@ -150,11 +145,6 @@ data.on(["created"], async (event) => {
   spotify.setRefreshToken(authData.refreshToken);
   const refreshData = await spotify.refreshAccessToken();
   spotify.setAccessToken(refreshData.body["access_token"]);
-  const { item } = event;
-  const { key } = item;
-  if (!key.startsWith("track:")) {
-    return;
-  }
   const spotifyTrackId = item.value.spotifyTrackId;
   const currentSongsOnPlaylist = await spotify.getPlaylistTracks(PLAYLIST_ID);
   const playlistIds = new Set(
@@ -164,7 +154,5 @@ data.on(["created"], async (event) => {
     console.log(`${spotifyTrackId} already on playlist`);
     return;
   }
-  try {
-    await spotify.addTracksToPlaylist(PLAYLIST_ID, [spotifyTrackId]);
-  } catch (e) {}
+  await spotify.addTracksToPlaylist(PLAYLIST_ID, [spotifyTrackId]);
 });
