@@ -135,7 +135,7 @@ api.get("/spotify", (req, res) => {
   return res.redirect(authUrl);
 });
 
-data.on(["created:track"], async (event) => {
+data.on(["created:track:*"], async (event) => {
   const { item } = event;
   const authData = await data.get<any>("spotify:auth");
   if (!authData) {
